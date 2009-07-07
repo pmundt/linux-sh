@@ -63,7 +63,7 @@ struct sa1100fb_lcd_reg {
 #define NR_RGB	3
 
 struct sa1100fb_info {
-	struct fb_info		fb;
+	struct fb_info		*fb;
 	struct device		*dev;
 	struct sa1100fb_rgb	*rgb[NR_RGB];
 
