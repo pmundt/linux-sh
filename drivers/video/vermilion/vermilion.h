@@ -210,7 +210,7 @@ struct vram_area {
 };
 
 struct vml_info {
-	struct fb_info info;
+	struct fb_info *info;
 	struct vml_par *par;
 	struct list_head head;
 	struct vram_area vram[VML_VRAM_AREAS];

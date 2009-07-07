@@ -408,6 +408,7 @@ static void __devexit vml_pci_remove(struct pci_dev *dev)
 		vmlfb_free_vram(vinfo);
 		vmlfb_disable_mmio(par);
 		vmlfb_release_devices(par);
+		framebuffer_release(info);
 		kfree(vinfo);
 		kfree(par);
 		mutex_unlock(&vml_mutex);
@@ -473,29 +474,35 @@ static int __devinit vml_pci_probe(struct pci_dev *dev,
 	par->vdc = dev;
 	atomic_set(&par->refcount, 1);
 
+	vinfo->info = framebuffer_alloc(0, &dev->dev);
+	if (!vinfo->info) {
+		err = -ENOMEM;
+		goto out_err_1;
+	}
+
 	switch (id->device) {
 	case VML_DEVICE_VDC:
 		if ((err = vmlfb_get_gpu(par)))
-			goto out_err_1;
-		pci_set_drvdata(dev, &vinfo->info);
+			goto out_err_2;
+		pci_set_drvdata(dev, vinfo->info);
 		break;
 	default:
 		err = -ENODEV;
-		goto out_err_1;
+		goto out_err_2;
 		break;
 	}
 
-	info = &vinfo->info;
+	info = vinfo->info;
 	info->flags = FBINFO_DEFAULT | FBINFO_PARTIAL_PAN_OK;
 
 	err = vmlfb_enable_mmio(par);
 	if (err)
-		goto out_err_2;
+		goto out_err_3;
 
 	err = vmlfb_alloc_vram(vinfo, vml_mem_requested,
 			       vml_mem_contig, vml_mem_min);
 	if (err)
-		goto out_err_3;
+		goto out_err_4;
 
 	strcpy(info->fix.id, "Vermilion Range");
 	info->fix.mmio_start = 0;
@@ -529,27 +536,29 @@ static int __devinit vml_pci_probe(struct pci_dev *dev,
 
 	if (fb_alloc_cmap(&info->cmap, 256, 1) < 0) {
 		err = -ENOMEM;
-		goto out_err_4;
+		goto out_err_5;
 	}
 
 	err = register_framebuffer(info);
 	if (err) {
 		printk(KERN_ERR MODULE_NAME ": Register framebuffer error.\n");
-		goto out_err_5;
+		goto out_err_6;
 	}
 
 	printk("Initialized vmlfb\n");
 
 	return 0;
 
-out_err_5:
+out_err_6:
 	fb_dealloc_cmap(&info->cmap);
-out_err_4:
+out_err_5:
 	vmlfb_free_vram(vinfo);
-out_err_3:
+out_err_4:
 	vmlfb_disable_mmio(par);
-out_err_2:
+out_err_3:
 	vmlfb_release_devices(par);
+out_err_2:
+	framebuffer_release(vinfo->info);
 out_err_1:
 	kfree(vinfo);
 out_err_0:
@@ -778,7 +787,7 @@ static void vml_dump_regs(struct vml_info *vinfo)
 static int vmlfb_set_par_locked(struct vml_info *vinfo)
 {
 	struct vml_par *par = vinfo->par;
-	struct fb_info *info = &vinfo->info;
+	struct fb_info *info = vinfo->info;
 	struct fb_var_screeninfo *var = &info->var;
 	u32 htotal, hactive, hblank_start, hblank_end, hsync_start, hsync_end;
 	u32 vtotal, vactive, vblank_start, vblank_end, vsync_start, vsync_end;
@@ -1115,7 +1124,7 @@ int vmlfb_register_subsys(struct vml_sys *sys)
 		 * completely validated with respect to the pixel clock.
 		 */
 
-		if (!vmlfb_check_var_locked(&entry->info.var, entry)) {
+		if (!vmlfb_check_var_locked(&entry->info->var, entry)) {
 			vmlfb_set_par_locked(entry);
 			list_add_tail(list, &global_has_mode);
 		} else {
@@ -1126,20 +1135,20 @@ int vmlfb_register_subsys(struct vml_sys *sys)
 			 */
 
 			mutex_unlock(&vml_mutex);
-			save_activate = entry->info.var.activate;
-			entry->info.var.bits_per_pixel = 16;
-			vmlfb_set_pref_pixel_format(&entry->info.var);
-			if (fb_find_mode(&entry->info.var,
-					 &entry->info,
+			save_activate = entry->info->var.activate;
+			entry->info->var.bits_per_pixel = 16;
+			vmlfb_set_pref_pixel_format(&entry->info->var);
+			if (fb_find_mode(&entry->info->var,
+					 entry->info,
 					 vml_default_mode, NULL, 0, NULL, 16)) {
-				entry->info.var.activate |=
+				entry->info->var.activate |=
 				    FB_ACTIVATE_FORCE | FB_ACTIVATE_NOW;
-				fb_set_var(&entry->info, &entry->info.var);
+				fb_set_var(entry->info, &entry->info->var);
 			} else {
 				printk(KERN_ERR MODULE_NAME
 				       ": Sorry. no mode found for this subsys.\n");
 			}
-			entry->info.var.activate = save_activate;
+			entry->info->var.activate = save_activate;
 			mutex_lock(&vml_mutex);
 		}
 		vmlfb_blank_locked(entry);
