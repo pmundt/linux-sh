@@ -116,7 +116,7 @@ static struct fb_var_screeninfo xilinx_fb_var = {
 
 struct xilinxfb_drvdata {
 
-	struct fb_info	info;		/* FB driver info record */
+	struct fb_info	*info;		/* FB driver info record */
 
 	phys_addr_t	regs_phys;	/* phys. address of the control
 						registers */
@@ -284,35 +284,41 @@ static int xilinxfb_assign(struct device *dev,
 	xilinx_fb_out_be32(drvdata, REG_CTRL,
 					drvdata->reg_ctrl_default);
 
-	/* Fill struct fb_info */
-	drvdata->info.device = dev;
-	drvdata->info.screen_base = (void __iomem *)drvdata->fb_virt;
-	drvdata->info.fbops = &xilinxfb_ops;
-	drvdata->info.fix = xilinx_fb_fix;
-	drvdata->info.fix.smem_start = drvdata->fb_phys;
-	drvdata->info.fix.smem_len = fbsize;
-	drvdata->info.fix.line_length = pdata->xvirt * BYTES_PER_PIXEL;
-
-	drvdata->info.pseudo_palette = drvdata->pseudo_palette;
-	drvdata->info.flags = FBINFO_DEFAULT;
-	drvdata->info.var = xilinx_fb_var;
-	drvdata->info.var.height = pdata->screen_height_mm;
-	drvdata->info.var.width = pdata->screen_width_mm;
-	drvdata->info.var.xres = pdata->xres;
-	drvdata->info.var.yres = pdata->yres;
-	drvdata->info.var.xres_virtual = pdata->xvirt;
-	drvdata->info.var.yres_virtual = pdata->yvirt;
-
-	/* Allocate a colour map */
-	rc = fb_alloc_cmap(&drvdata->info.cmap, PALETTE_ENTRIES_NO, 0);
-	if (rc) {
-		dev_err(dev, "Fail to allocate colormap (%d entries)\n",
-			PALETTE_ENTRIES_NO);
+	drvdata->info = framebuffer_alloc(0, dev);
+	if (!drvdata->info) {
+		dev_err(dev, "Failed to allocate fb_info\n");
 		goto err_cmap;
 	}
 
+	/* Fill struct fb_info */
+	drvdata->info->device = dev;
+	drvdata->info->screen_base = (void __iomem *)drvdata->fb_virt;
+	drvdata->info->fbops = &xilinxfb_ops;
+	drvdata->info->fix = xilinx_fb_fix;
+	drvdata->info->fix.smem_start = drvdata->fb_phys;
+	drvdata->info->fix.smem_len = fbsize;
+	drvdata->info->fix.line_length = pdata->xvirt * BYTES_PER_PIXEL;
+
+	drvdata->info->pseudo_palette = drvdata->pseudo_palette;
+	drvdata->info->flags = FBINFO_DEFAULT;
+	drvdata->info->var = xilinx_fb_var;
+	drvdata->info->var.height = pdata->screen_height_mm;
+	drvdata->info->var.width = pdata->screen_width_mm;
+	drvdata->info->var.xres = pdata->xres;
+	drvdata->info->var.yres = pdata->yres;
+	drvdata->info->var.xres_virtual = pdata->xvirt;
+	drvdata->info->var.yres_virtual = pdata->yvirt;
+
+	/* Allocate a colour map */
+	rc = fb_alloc_cmap(&drvdata->info->cmap, PALETTE_ENTRIES_NO, 0);
+	if (rc) {
+		dev_err(dev, "Fail to allocate colormap (%d entries)\n",
+			PALETTE_ENTRIES_NO);
+		goto err_info;
+	}
+
 	/* Register new frame buffer */
-	rc = register_framebuffer(&drvdata->info);
+	rc = register_framebuffer(drvdata->info);
 	if (rc) {
 		dev_err(dev, "Could not register frame buffer\n");
 		goto err_regfb;
@@ -330,7 +336,10 @@ static int xilinxfb_assign(struct device *dev,
 	return 0;	/* success */
 
 err_regfb:
-	fb_dealloc_cmap(&drvdata->info.cmap);
+	fb_dealloc_cmap(&drvdata->info->cmap);
+
+err_info:
+	framebuffer_release(drvdata->info);
 
 err_cmap:
 	if (drvdata->fb_alloced)
@@ -362,15 +371,15 @@ static int xilinxfb_release(struct device *dev)
 	struct xilinxfb_drvdata *drvdata = dev_get_drvdata(dev);
 
 #if !defined(CONFIG_FRAMEBUFFER_CONSOLE) && defined(CONFIG_LOGO)
-	xilinx_fb_blank(VESA_POWERDOWN, &drvdata->info);
+	xilinx_fb_blank(VESA_POWERDOWN, drvdata->info);
 #endif
 
-	unregister_framebuffer(&drvdata->info);
+	unregister_framebuffer(drvdata->info);
 
-	fb_dealloc_cmap(&drvdata->info.cmap);
+	fb_dealloc_cmap(&drvdata->info->cmap);
 
 	if (drvdata->fb_alloced)
-		dma_free_coherent(dev, PAGE_ALIGN(drvdata->info.fix.smem_len),
+		dma_free_coherent(dev, PAGE_ALIGN(drvdata->info->fix.smem_len),
 				  drvdata->fb_virt, drvdata->fb_phys);
 	else
 		iounmap(drvdata->fb_virt);
@@ -385,6 +394,7 @@ static int xilinxfb_release(struct device *dev)
 	} else
 		dcr_unmap(drvdata->dcr_host, drvdata->dcr_len);
 
+	framebuffer_release(drvdata->info);
 	kfree(drvdata);
 	dev_set_drvdata(dev, NULL);
 
