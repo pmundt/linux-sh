@@ -19,19 +19,6 @@
 #endif
 #include <asm/page.h>
 
-#ifndef __ASSEMBLY__
-#include <asm/addrspace.h>
-#include <asm/fixmap.h>
-
-/*
- * ZERO_PAGE is a global shared page that is always zero: used
- * for zero-mapped memory areas etc..
- */
-extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
-#define ZERO_PAGE(vaddr) (virt_to_page(empty_zero_page))
-
-#endif /* !__ASSEMBLY__ */
-
 /*
  * Effective and physical address definitions, to aid with sign
  * extension.
@@ -39,12 +26,6 @@ extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
 #define NEFF		32
 #define	NEFF_SIGN	(1LL << (NEFF - 1))
 #define	NEFF_MASK	(-1LL << NEFF)
-
-static inline unsigned long long neff_sign_extend(unsigned long val)
-{
-	unsigned long long extended = val;
-	return (extended & NEFF_SIGN) ? (extended | NEFF_MASK) : extended;
-}
 
 #ifdef CONFIG_29BIT
 #define NPHYS		29
@@ -63,39 +44,8 @@ static inline unsigned long long neff_sign_extend(unsigned long val)
 
 #define FIRST_USER_ADDRESS	0
 
-#define PHYS_ADDR_MASK29		0x1fffffff
-#define PHYS_ADDR_MASK32		0xffffffff
-
-#ifdef CONFIG_PMB
-static inline unsigned long phys_addr_mask(void)
-{
-	/* Is the MMU in 29bit mode? */
-	if (__in_29bit_mode())
-		return PHYS_ADDR_MASK29;
-
-	return PHYS_ADDR_MASK32;
-}
-#elif defined(CONFIG_32BIT)
-static inline unsigned long phys_addr_mask(void)
-{
-	return PHYS_ADDR_MASK32;
-}
-#else
-static inline unsigned long phys_addr_mask(void)
-{
-	return PHYS_ADDR_MASK29;
-}
-#endif
-
-#define PTE_PHYS_MASK		(phys_addr_mask() & PAGE_MASK)
-#define PTE_FLAGS_MASK		(~(PTE_PHYS_MASK) << PAGE_SHIFT)
-
-#ifdef CONFIG_SUPERH32
-#define VMALLOC_START	(P3SEG)
-#else
-#define VMALLOC_START	(0xf0000000)
-#endif
-#define VMALLOC_END	(FIXADDR_START-2*PAGE_SIZE)
+#define PHYS_ADDR_MASK29	0x1fffffff
+#define PHYS_ADDR_MASK32	0xffffffff
 
 #if defined(CONFIG_SUPERH32)
 #include <asm/pgtable_32.h>
@@ -131,7 +81,43 @@ static inline unsigned long phys_addr_mask(void)
 #define __S110	PAGE_RWX
 #define __S111	PAGE_RWX
 
+#ifndef __ASSEMBLY__
+#include <asm/addrspace.h>
+#include <asm/fixmap.h>
+
+#ifdef CONFIG_SUPERH32
+#define VMALLOC_START	(P3SEG)
+#else
+#define VMALLOC_START	(0xf0000000)
+#endif
+#define VMALLOC_END	(FIXADDR_START-2*PAGE_SIZE)
+
 typedef pte_t *pte_addr_t;
+
+/*
+ * ZERO_PAGE is a global shared page that is always zero: used
+ * for zero-mapped memory areas etc..
+ */
+extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
+#define ZERO_PAGE(vaddr) (virt_to_page(empty_zero_page))
+
+static inline unsigned long long neff_sign_extend(unsigned long val)
+{
+	unsigned long long extended = val;
+	return (extended & NEFF_SIGN) ? (extended | NEFF_MASK) : extended;
+}
+
+static inline unsigned long phys_addr_mask(void)
+{
+	/* Is the MMU in 29bit mode? */
+	if (__in_29bit_mode())
+		return PHYS_ADDR_MASK29;
+
+	return PHYS_ADDR_MASK32;
+}
+
+#define PTE_PHYS_MASK		(phys_addr_mask() & PAGE_MASK)
+#define PTE_FLAGS_MASK		(~(PTE_PHYS_MASK) << PAGE_SHIFT)
 
 #define kern_addr_valid(addr)	(1)
 
@@ -164,6 +150,8 @@ extern pgd_t swapper_pg_dir[PTRS_PER_PGD];
 extern void paging_init(void);
 extern void page_table_range_init(unsigned long start, unsigned long end,
 				  pgd_t *pgd);
+extern void __init kernel_physical_mapping_init(unsigned long, unsigned long);
+#endif /* __ASSEMBLY__ */
 
 /* arch/sh/mm/mmap.c */
 #define HAVE_ARCH_UNMAPPED_AREA

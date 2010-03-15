@@ -14,6 +14,8 @@
 
 #include <cpu/addrspace.h>
 
+#ifndef __ASSEMBLY__
+
 /* If this CPU supports segmentation, hook up the helpers */
 #ifdef P1SEG
 
@@ -53,6 +55,8 @@
 
 /* Check if an address can be reached in 29 bits */
 #define IS_29BIT(a)	(((unsigned long)(a)) < 0x20000000)
+
+#endif /* __ASSEMBLY__ */
 
 #ifdef CONFIG_SH_STORE_QUEUES
 /*
