@@ -333,8 +333,19 @@ void irq_set_default_host(struct irq_domain *domain)
 }
 EXPORT_SYMBOL_GPL(irq_set_default_host);
 
-static int irq_setup_virq(struct irq_domain *domain, unsigned int virq,
-			    irq_hw_number_t hwirq)
+/**
+ * irq_domain_associate() - Associate a hardware irq with a linux irq
+ * @domain: domain owning the irq
+ * @virq: linux irq
+ * @hwirq: hardware irq
+ *
+ * This routine establishes a hardware IRQ association with an existing
+ * linux IRQ in the specified domain space. For use by controllers
+ * needing to establish individual or otherwise non-linear IRQ
+ * associations.
+ */
+int irq_domain_associate(struct irq_domain *domain, unsigned int virq,
+			 irq_hw_number_t hwirq)
 {
 	struct irq_data *irq_data = irq_get_irq_data(virq);
 
@@ -351,6 +362,44 @@ static int irq_setup_virq(struct irq_domain *domain, unsigned int virq,
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(irq_domain_associate);
+
+/**
+ * irq_domain_associate_many() - Associate a range of hw irqs with linux irqs
+ * @domain: domain owning the interrupt range
+ * @irq_base: beginning of linux IRQ range
+ * @hwirq_base: beginning of hardware IRQ range
+ * @count: Number of interrupts to associate
+ *
+ * This routine takes care of creating an association between a range of
+ * hardware and linux IRQs using pre-existing IRQ allocations. For use by
+ * controllers that do their own irq_desc management.
+ */
+int irq_domain_associate_many(struct irq_domain *domain, unsigned int irq_base,
+			      irq_hw_number_t hwirq_base, int count)
+{
+	int i, ret;
+
+	for (i = 0; i < count; i++) {
+		ret = irq_domain_associate(domain, irq_base + i,
+					   hwirq_base + i);
+		if (unlikely(ret))
+			goto unmap;
+	}
+
+	return 0;
+
+unmap:
+	while (--i >= 0) {
+		if (domain->ops->unmap)
+			domain->ops->unmap(domain, irq_base + i);
+
+		irq_set_status_flags(irq_base + i, IRQ_NOREQUEST);
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(irq_domain_associate_many);
 
 /**
  * irq_create_direct_mapping() - Allocate an irq for direct mapping
@@ -383,7 +432,7 @@ unsigned int irq_create_direct_mapping(struct irq_domain *domain)
 	}
 	pr_debug("create_direct obtained virq %d\n", virq);
 
-	if (irq_setup_virq(domain, virq, virq)) {
+	if (irq_domain_associate(domain, virq, virq)) {
 		irq_free_desc(virq);
 		return 0;
 	}
@@ -444,7 +493,7 @@ unsigned int irq_create_mapping(struct irq_domain *domain,
 		return 0;
 	}
 
-	if (irq_setup_virq(domain, virq, hwirq)) {
+	if (irq_domain_associate(domain, virq, hwirq)) {
 		if (domain->revmap_type != IRQ_DOMAIN_MAP_LEGACY)
 			irq_free_desc(virq);
 		return 0;
@@ -456,6 +505,44 @@ unsigned int irq_create_mapping(struct irq_domain *domain,
 	return virq;
 }
 EXPORT_SYMBOL_GPL(irq_create_mapping);
+
+/**
+ * irq_create_strict_mappings() - Map a range of hw irqs to fixed linux irqs
+ * @domain: domain owning the interrupt range
+ * @irq_base: beginning of linux IRQ range
+ * @hwirq_base: beginning of hardware IRQ range
+ * @count: Number of interrupts to map
+ *
+ * This routine is used for allocating and mapping a range of hardware
+ * irqs to linux irqs where the linux irq numbers are at pre-defined
+ * locations. For use by controllers that already have static mappings
+ * to insert in to the domain.
+ *
+ * Non-linear users can use irq_create_identity_mapping() for IRQ-at-a-time
+ * domain insertion.
+ *
+ * 0 is returned upon success, while any failure to establish a static
+ * mapping is treated as an error.
+ */
+int irq_create_strict_mappings(struct irq_domain *domain, unsigned int irq_base,
+			       irq_hw_number_t hwirq_base, int count)
+{
+	int ret;
+
+	ret = irq_alloc_descs(irq_base, irq_base, count,
+			      of_node_to_nid(domain->of_node));
+	if (unlikely(ret < 0))
+		return ret;
+
+	ret = irq_domain_associate_many(domain, irq_base, hwirq_base, count);
+	if (unlikely(ret < 0)) {
+		irq_free_descs(irq_base, count);
+		return ret;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(irq_create_strict_mappings);
 
 unsigned int irq_create_of_mapping(struct device_node *controller,
 				   const u32 *intspec, unsigned int intsize)
