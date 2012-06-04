@@ -38,14 +38,14 @@ static struct irq_domain *irq_default_domain;
  * to IRQ domain, or NULL on failure.
  */
 static struct irq_domain *irq_domain_alloc(struct device_node *of_node,
-					   unsigned int revmap_type,
+					   unsigned int revmap_type, int size,
 					   const struct irq_domain_ops *ops,
 					   void *host_data)
 {
 	struct irq_domain *domain;
 
-	domain = kzalloc_node(sizeof(*domain), GFP_KERNEL,
-			      of_node_to_nid(of_node));
+	domain = kzalloc_node(sizeof(*domain) + (sizeof(unsigned int) * size),
+			      GFP_KERNEL, of_node_to_nid(of_node));
 	if (WARN_ON(!domain))
 		return NULL;
 
@@ -92,13 +92,7 @@ void irq_domain_remove(struct irq_domain *domain)
 		 * node when all entries are removed. Shout if there are
 		 * any mappings left.
 		 */
-		WARN_ON(domain->revmap_data.tree.height);
-		break;
-	case IRQ_DOMAIN_MAP_LINEAR:
-		kfree(domain->revmap_data.linear.revmap);
-		domain->revmap_data.linear.size = 0;
-		break;
-	case IRQ_DOMAIN_MAP_NOMAP:
+		WARN_ON(domain->radix_tree.height);
 		break;
 	}
 
@@ -170,20 +164,12 @@ struct irq_domain *irq_domain_add_linear(struct device_node *of_node,
 					 void *host_data)
 {
 	struct irq_domain *domain;
-	unsigned int *revmap;
 
-	revmap = kzalloc_node(sizeof(*revmap) * size, GFP_KERNEL,
-			      of_node_to_nid(of_node));
-	if (WARN_ON(!revmap))
+	domain = irq_domain_alloc(of_node, IRQ_DOMAIN_MAP_LINEAR, size, ops, host_data);
+	if (!domain)
 		return NULL;
 
-	domain = irq_domain_alloc(of_node, IRQ_DOMAIN_MAP_LINEAR, ops, host_data);
-	if (!domain) {
-		kfree(revmap);
-		return NULL;
-	}
-	domain->revmap_data.linear.size = size;
-	domain->revmap_data.linear.revmap = revmap;
+	domain->linear_size = size;
 	irq_domain_add(domain);
 	return domain;
 }
@@ -195,9 +181,9 @@ struct irq_domain *irq_domain_add_nomap(struct device_node *of_node,
 					 void *host_data)
 {
 	struct irq_domain *domain = irq_domain_alloc(of_node,
-					IRQ_DOMAIN_MAP_NOMAP, ops, host_data);
+					IRQ_DOMAIN_MAP_NOMAP, 0, ops, host_data);
 	if (domain) {
-		domain->revmap_data.nomap.max_irq = max_irq ? max_irq : ~0;
+		domain->nomap_max_irq = max_irq ? max_irq : ~0;
 		irq_domain_add(domain);
 	}
 	return domain;
@@ -217,9 +203,9 @@ struct irq_domain *irq_domain_add_tree(struct device_node *of_node,
 					 void *host_data)
 {
 	struct irq_domain *domain = irq_domain_alloc(of_node,
-					IRQ_DOMAIN_MAP_TREE, ops, host_data);
+					IRQ_DOMAIN_MAP_TREE, 0, ops, host_data);
 	if (domain) {
-		INIT_RADIX_TREE(&domain->revmap_data.tree, GFP_KERNEL);
+		INIT_RADIX_TREE(&domain->radix_tree, GFP_KERNEL);
 		irq_domain_add(domain);
 	}
 	return domain;
@@ -308,12 +294,12 @@ static void irq_domain_disassociate_many(struct irq_domain *domain,
 		/* Clear reverse map */
 		switch(domain->revmap_type) {
 		case IRQ_DOMAIN_MAP_LINEAR:
-			if (hwirq < domain->revmap_data.linear.size)
-				domain->revmap_data.linear.revmap[hwirq] = 0;
+			if (hwirq < domain->linear_size)
+				domain->linear_revmap[hwirq] = 0;
 			break;
 		case IRQ_DOMAIN_MAP_TREE:
 			mutex_lock(&revmap_trees_mutex);
-			radix_tree_delete(&domain->revmap_data.tree, hwirq);
+			radix_tree_delete(&domain->radix_tree, hwirq);
 			mutex_unlock(&revmap_trees_mutex);
 			break;
 		}
@@ -352,12 +338,12 @@ int irq_domain_associate_many(struct irq_domain *domain, unsigned int irq_base,
 
 		switch (domain->revmap_type) {
 		case IRQ_DOMAIN_MAP_LINEAR:
-			if (hwirq < domain->revmap_data.linear.size)
-				domain->revmap_data.linear.revmap[hwirq] = virq;
+			if (hwirq < domain->linear_size)
+				domain->linear_revmap[hwirq] = virq;
 			break;
 		case IRQ_DOMAIN_MAP_TREE:
 			mutex_lock(&revmap_trees_mutex);
-			radix_tree_insert(&domain->revmap_data.tree, hwirq, irq_data);
+			radix_tree_insert(&domain->radix_tree, hwirq, irq_data);
 			mutex_unlock(&revmap_trees_mutex);
 			break;
 		}
@@ -396,9 +382,9 @@ unsigned int irq_create_direct_mapping(struct irq_domain *domain)
 		pr_debug("create_direct virq allocation failed\n");
 		return 0;
 	}
-	if (virq >= domain->revmap_data.nomap.max_irq) {
+	if (virq >= domain->nomap_max_irq) {
 		pr_err("ERROR: no free irqs available below %i maximum\n",
-			domain->revmap_data.nomap.max_irq);
+			domain->nomap_max_irq);
 		irq_free_desc(virq);
 		return 0;
 	}
@@ -602,7 +588,7 @@ unsigned int irq_find_mapping(struct irq_domain *domain,
 		return irq_linear_revmap(domain, hwirq);
 	case IRQ_DOMAIN_MAP_TREE:
 		rcu_read_lock();
-		data = radix_tree_lookup(&domain->revmap_data.tree, hwirq);
+		data = radix_tree_lookup(&domain->radix_tree, hwirq);
 		rcu_read_unlock();
 		if (data)
 			return data->irq;
@@ -634,10 +620,10 @@ unsigned int irq_linear_revmap(struct irq_domain *domain,
 	BUG_ON(domain->revmap_type != IRQ_DOMAIN_MAP_LINEAR);
 
 	/* Check revmap bounds; complain if exceeded */
-	if (WARN_ON(hwirq >= domain->revmap_data.linear.size))
+	if (WARN_ON(hwirq >= domain->linear_size))
 		return 0;
 
-	return domain->revmap_data.linear.revmap[hwirq];
+	return domain->linear_revmap[hwirq];
 }
 EXPORT_SYMBOL_GPL(irq_linear_revmap);
 

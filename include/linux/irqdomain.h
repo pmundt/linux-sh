@@ -71,7 +71,6 @@ struct irq_domain_ops {
  * @link: Element in global irq_domain list.
  * @revmap_type: Method used for reverse mapping hwirq numbers to linux irq. This
  *               will be one of the IRQ_DOMAIN_MAP_* values.
- * @revmap_data: Revmap method specific data.
  * @ops: pointer to irq_domain methods
  * @host_data: private data pointer for use by owner.  Not touched by irq_domain
  *             core code.
@@ -88,22 +87,18 @@ struct irq_domain {
 
 	/* type of reverse mapping_technique */
 	unsigned int revmap_type;
-	union {
-		struct {
-			unsigned int size;
-			unsigned int *revmap;
-		} linear;
-		struct {
-			unsigned int max_irq;
-		} nomap;
-		struct radix_tree_root tree;
-	} revmap_data;
 	const struct irq_domain_ops *ops;
 	void *host_data;
 	irq_hw_number_t inval_irq;
 
 	/* Optional device node pointer */
 	struct device_node *of_node;
+
+	/* Reverse mapping data */
+	unsigned int nomap_max_irq;
+	struct radix_tree_root radix_tree;
+	unsigned int linear_size;
+	unsigned int linear_revmap[];
 };
 
 #ifdef CONFIG_IRQ_DOMAIN
