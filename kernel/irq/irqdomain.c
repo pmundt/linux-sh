@@ -18,7 +18,6 @@
 
 #define IRQ_DOMAIN_MAP_NOMAP 1 /* no fast reverse mapping */
 #define IRQ_DOMAIN_MAP_LINEAR 2 /* linear map of interrupts */
-#define IRQ_DOMAIN_MAP_TREE 3 /* radix tree */
 
 static LIST_HEAD(irq_domain_list);
 static DEFINE_MUTEX(irq_domain_mutex);
@@ -50,10 +49,12 @@ static struct irq_domain *irq_domain_alloc(struct device_node *of_node,
 		return NULL;
 
 	/* Fill structure */
+	INIT_RADIX_TREE(&domain->radix_tree, GFP_KERNEL);
 	domain->revmap_type = revmap_type;
 	domain->ops = ops;
 	domain->host_data = host_data;
 	domain->of_node = of_node_get(of_node);
+	domain->linear_size = size;
 
 	return domain;
 }
@@ -84,17 +85,7 @@ static void irq_domain_add(struct irq_domain *domain)
 void irq_domain_remove(struct irq_domain *domain)
 {
 	mutex_lock(&irq_domain_mutex);
-
-	switch (domain->revmap_type) {
-	case IRQ_DOMAIN_MAP_TREE:
-		/*
-		 * radix_tree_delete() takes care of destroying the root
-		 * node when all entries are removed. Shout if there are
-		 * any mappings left.
-		 */
-		WARN_ON(domain->radix_tree.height);
-		break;
-	}
+	WARN_ON(domain->radix_tree.height);
 
 	list_del(&domain->link);
 
@@ -169,7 +160,6 @@ struct irq_domain *irq_domain_add_linear(struct device_node *of_node,
 	if (!domain)
 		return NULL;
 
-	domain->linear_size = size;
 	irq_domain_add(domain);
 	return domain;
 }
@@ -189,28 +179,6 @@ struct irq_domain *irq_domain_add_nomap(struct device_node *of_node,
 	return domain;
 }
 EXPORT_SYMBOL_GPL(irq_domain_add_nomap);
-
-/**
- * irq_domain_add_tree()
- * @of_node: pointer to interrupt controller's device tree node.
- * @ops: map/unmap domain callbacks
- *
- * Note: The radix tree will be allocated later during boot automatically
- * (the reverse mapping will use the slow path until that happens).
- */
-struct irq_domain *irq_domain_add_tree(struct device_node *of_node,
-					 const struct irq_domain_ops *ops,
-					 void *host_data)
-{
-	struct irq_domain *domain = irq_domain_alloc(of_node,
-					IRQ_DOMAIN_MAP_TREE, 0, ops, host_data);
-	if (domain) {
-		INIT_RADIX_TREE(&domain->radix_tree, GFP_KERNEL);
-		irq_domain_add(domain);
-	}
-	return domain;
-}
-EXPORT_SYMBOL_GPL(irq_domain_add_tree);
 
 /**
  * irq_find_host() - Locates a domain for a given device node
@@ -292,16 +260,12 @@ static void irq_domain_disassociate_many(struct irq_domain *domain,
 		irq_data->hwirq = 0;
 
 		/* Clear reverse map */
-		switch(domain->revmap_type) {
-		case IRQ_DOMAIN_MAP_LINEAR:
-			if (hwirq < domain->linear_size)
-				domain->linear_revmap[hwirq] = 0;
-			break;
-		case IRQ_DOMAIN_MAP_TREE:
+		if (hwirq < domain->linear_size)
+			domain->linear_revmap[hwirq] = 0;
+		else {
 			mutex_lock(&revmap_trees_mutex);
 			radix_tree_delete(&domain->radix_tree, hwirq);
 			mutex_unlock(&revmap_trees_mutex);
-			break;
 		}
 	}
 }
@@ -336,16 +300,12 @@ int irq_domain_associate_many(struct irq_domain *domain, unsigned int irq_base,
 			goto err_unmap;
 		}
 
-		switch (domain->revmap_type) {
-		case IRQ_DOMAIN_MAP_LINEAR:
-			if (hwirq < domain->linear_size)
-				domain->linear_revmap[hwirq] = virq;
-			break;
-		case IRQ_DOMAIN_MAP_TREE:
+		if (hwirq < domain->linear_size)
+			domain->linear_revmap[hwirq] = virq;
+		else {
 			mutex_lock(&revmap_trees_mutex);
 			radix_tree_insert(&domain->radix_tree, hwirq, irq_data);
 			mutex_unlock(&revmap_trees_mutex);
-			break;
 		}
 
 		irq_clear_status_flags(virq, IRQ_NOREQUEST);
@@ -586,13 +546,6 @@ unsigned int irq_find_mapping(struct irq_domain *domain,
 	switch (domain->revmap_type) {
 	case IRQ_DOMAIN_MAP_LINEAR:
 		return irq_linear_revmap(domain, hwirq);
-	case IRQ_DOMAIN_MAP_TREE:
-		rcu_read_lock();
-		data = radix_tree_lookup(&domain->radix_tree, hwirq);
-		rcu_read_unlock();
-		if (data)
-			return data->irq;
-		break;
 	case IRQ_DOMAIN_MAP_NOMAP:
 		data = irq_get_irq_data(hwirq);
 		if (data && (data->domain == domain) && (data->hwirq == hwirq))
@@ -617,11 +570,16 @@ EXPORT_SYMBOL_GPL(irq_find_mapping);
 unsigned int irq_linear_revmap(struct irq_domain *domain,
 			       irq_hw_number_t hwirq)
 {
+	struct irq_data *data;
 	BUG_ON(domain->revmap_type != IRQ_DOMAIN_MAP_LINEAR);
 
 	/* Check revmap bounds; complain if exceeded */
-	if (WARN_ON(hwirq >= domain->linear_size))
-		return 0;
+	if (hwirq >= domain->linear_size) {
+		rcu_read_lock();
+		data = radix_tree_lookup(&domain->radix_tree, hwirq);
+		rcu_read_unlock();
+		return data ? data->irq : 0;
+	}
 
 	return domain->linear_revmap[hwirq];
 }
