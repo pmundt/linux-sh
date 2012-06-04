@@ -1,3 +1,4 @@
+#define DEBUG
 #define pr_fmt(fmt)  "irq: " fmt
 
 #include <linux/debugfs.h>
@@ -276,6 +277,9 @@ int irq_domain_associate_many(struct irq_domain *domain, unsigned int irq_base,
 	unsigned int virq = irq_base;
 	irq_hw_number_t hwirq = hwirq_base;
 	int i;
+
+	pr_debug("%s(%s, irqbase=%i, hwbase=%i, count=%i)\n", __func__,
+		of_node_full_name(domain->of_node), irq_base, (int)hwirq_base, count);
 
 	for (i = 0; i < count; i++) {
 		struct irq_data *irq_data = irq_get_irq_data(virq + i);
