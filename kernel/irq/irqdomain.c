@@ -546,6 +546,49 @@ void irq_dispose_mapping(unsigned int virq)
 }
 EXPORT_SYMBOL_GPL(irq_dispose_mapping);
 
+#define IRQ_DOMAIN_BATCH_IRQS	16
+
+/**
+ * irq_domain_dispose_mappings() - Dispose of all mappings in a domain
+ * @domain: domain to tear down
+ */
+void irq_domain_dispose_mappings(struct irq_domain *domain)
+{
+	if (domain->revmap_type == IRQ_DOMAIN_MAP_NOMAP)
+		return;
+
+	if (domain->linear_size) {
+		int i;
+
+		for (i = 0; i < domain->linear_size; i++)
+			irq_dispose_mapping(domain->linear_revmap[i]);
+	} else {
+		struct irq_data *irq_data_batch[IRQ_DOMAIN_BATCH_IRQS];
+		unsigned int nr_found;
+		unsigned long index = 0;
+
+		rcu_read_lock();
+
+		for (;;) {
+			int i;
+
+			nr_found = radix_tree_gang_lookup(&domain->radix_tree,
+					(void **)irq_data_batch, index,
+					ARRAY_SIZE(irq_data_batch));
+			if (!nr_found)
+				break;
+
+			for (i = 0; i < nr_found; i++)
+				irq_dispose_mapping(irq_data_batch[i]->irq);
+
+			index += nr_found;
+		}
+
+		rcu_read_unlock();
+	}
+}
+EXPORT_SYMBOL_GPL(irq_domain_dispose_mappings);
+
 /**
  * irq_find_mapping() - Find a linux irq from an hw irq number.
  * @domain: domain owning this hardware interrupt

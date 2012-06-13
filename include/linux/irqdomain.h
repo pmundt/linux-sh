@@ -149,6 +149,7 @@ static inline int irq_domain_associate(struct irq_domain *domain, unsigned int i
 extern unsigned int irq_create_mapping(struct irq_domain *host,
 				       irq_hw_number_t hwirq);
 extern void irq_dispose_mapping(unsigned int virq);
+extern void irq_domain_dispose_mappings(struct irq_domain *domain);
 extern unsigned int irq_find_mapping(struct irq_domain *host,
 				     irq_hw_number_t hwirq);
 extern unsigned int irq_create_direct_mapping(struct irq_domain *host);
