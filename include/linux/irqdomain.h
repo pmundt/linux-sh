@@ -97,6 +97,7 @@ struct irq_domain {
 	/* Reverse mapping data */
 	unsigned int nomap_max_irq;
 	struct radix_tree_root radix_tree;
+	unsigned int linear_start;
 	unsigned int linear_size;
 	unsigned int linear_revmap[];
 };

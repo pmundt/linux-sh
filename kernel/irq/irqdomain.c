@@ -55,6 +55,7 @@ static struct irq_domain *irq_domain_alloc(struct device_node *of_node,
 	domain->ops = ops;
 	domain->host_data = host_data;
 	domain->of_node = of_node_get(of_node);
+	domain->linear_start = 0;
 	domain->linear_size = size;
 
 	return domain;
@@ -268,8 +269,8 @@ static void irq_domain_disassociate_many(struct irq_domain *domain,
 		irq_data->hwirq = 0;
 
 		/* Clear reverse map */
-		if (hwirq < domain->linear_size)
-			domain->linear_revmap[hwirq] = 0;
+		if (hwirq - domain->linear_start < domain->linear_size)
+			domain->linear_revmap[hwirq - domain->linear_start] = 0;
 		else {
 			mutex_lock(&revmap_trees_mutex);
 			radix_tree_delete(&domain->radix_tree, hwirq);
@@ -287,6 +288,13 @@ int irq_domain_associate_many(struct irq_domain *domain, unsigned int irq_base,
 
 	pr_debug("%s(%s, irqbase=%i, hwbase=%i, count=%i)\n", __func__,
 		of_node_full_name(domain->of_node), irq_base, (int)hwirq_base, count);
+
+	/*
+	 * The linear revmap may not begin at 0, factor in the hwirq
+	 * displacement here.
+	 */
+	if (domain->linear_size)
+		domain->linear_start = hwirq_base;
 
 	for (i = 0; i < count; i++) {
 		struct irq_data *irq_data = irq_get_irq_data(virq + i);
@@ -311,8 +319,8 @@ int irq_domain_associate_many(struct irq_domain *domain, unsigned int irq_base,
 			goto err_unmap;
 		}
 
-		if (hwirq < domain->linear_size)
-			domain->linear_revmap[hwirq] = virq;
+		if (hwirq - domain->linear_start < domain->linear_size)
+			domain->linear_revmap[hwirq - domain->linear_start] = virq;
 		else {
 			mutex_lock(&revmap_trees_mutex);
 			radix_tree_insert(&domain->radix_tree, hwirq, irq_data);
@@ -585,7 +593,7 @@ unsigned int irq_linear_revmap(struct irq_domain *domain,
 	BUG_ON(domain->revmap_type != IRQ_DOMAIN_MAP_LINEAR);
 
 	/* Check revmap bounds; complain if exceeded */
-	if (hwirq >= domain->linear_size) {
+	if (hwirq - domain->linear_start >= domain->linear_size) {
 		rcu_read_lock();
 		data = radix_tree_lookup(&domain->radix_tree, hwirq);
 		rcu_read_unlock();
